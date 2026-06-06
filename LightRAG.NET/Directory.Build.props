@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Shared netstandard2.1 polyfills (no-op on net targets via #if guard). -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Polyfills.shared.cs" Link="Polyfills.shared.cs" />
+  </ItemGroup>
+</Project>

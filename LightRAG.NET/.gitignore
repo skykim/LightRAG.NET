@@ -1,0 +1,26 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+artifacts/
+
+# Rider / Visual Studio / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# Test results
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+coverage/
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# OS / tooling
+.DS_Store
+.omc/

@@ -1,3 +1,75 @@
+# 🔷 LightRAG.NET — C# / Unity port
+
+> **A C# port of LightRAG's core retrieval-augmented-generation engine.** It lives in
+> [`LightRAG.NET/`](./LightRAG.NET) and targets **netstandard2.1**, so the same assemblies run on
+> **.NET 9** and inside **Unity** (Mono / IL2CPP). Prebuilt DLLs are published on the
+> [**Releases**](https://github.com/skykim/LightRAG.NET/releases) page.
+
+### What's ported
+Document ingestion → token chunking → LLM entity/relationship extraction (with gleaning) →
+knowledge-graph construction (merge + description summarization) → all query modes
+(`local` / `global` / `hybrid` / `mix` / `naive` / `bypass`) → answer generation.
+**File-based storage** (zero external services) with an **Ollama** provider.
+
+### How it's implemented
+| Project | TFM | Role |
+|---|---|---|
+| `src/LightRAG.Core` | netstandard2.1 | Engine: typed config + constructor injection (replaces Python's `global_config` dict), prompts, tiktoken-parity tokenizer, `PriorityAsyncScheduler` (interactive queries preempt ingestion), extraction, KG builder, query engine, `LightRag` facade |
+| `src/LightRAG.Storage.FileBased` | netstandard2.1 | JSON KV / doc-status, cosine nano-vectordb, GraphML graph; `FileBasedLightRag` factory |
+| `src/LightRAG.Providers.Ollama` | netstandard2.1 | `OllamaLlm` + `OllamaEmbedding` via OllamaSharp |
+
+- JSON uses **Newtonsoft.Json** (works on both .NET and Unity); Python's `json_repair` is reimplemented as `JsonRepair`.
+- Tokenizer and chunk boundaries are verified to match Python `tiktoken` (o200k_base) exactly.
+- `netstandard2.1` polyfills for `init` / `required` live in `Polyfills.shared.cs`.
+
+### Build
+```bash
+cd LightRAG.NET
+dotnet build src/LightRAG.Core              -c Release   # core engine
+dotnet build src/LightRAG.Storage.FileBased -c Release
+dotnet build src/LightRAG.Providers.Ollama  -c Release
+./build-unity-plugins.sh                                 # netstandard2.1 DLLs for Unity (optional)
+```
+> Note: the `tests/` CLIP-parity test and the `samples/` data path reference the companion
+> **`lightrag-unity`** project; clone it alongside this repo to build/run those.
+
+### Use
+```csharp
+using LightRAG.Core;
+using LightRAG.Providers.Ollama;
+using LightRAG.Storage.FileBased;
+
+var llm = new OllamaLlm("gemma2:2b", "http://localhost:11434", numCtx: 8192);
+var embedding = new OllamaEmbedding("nomic-embed-text", "http://localhost:11434", embeddingDim: 768)
+    .AsEmbeddingFunc();
+
+var rag = FileBasedLightRag.Create("./rag_storage", llm, embedding, new LightRagConfig
+{
+    Temperature = 0,
+    MaxAsync = 2,
+});
+
+await rag.InitializeAsync();
+await rag.InsertAsync("Your document text here.", "doc1.txt");
+
+var result = await rag.QueryAsync(
+    "What is this document about?",
+    new QueryParam { Mode = QueryMode.Hybrid });
+Console.WriteLine(result.Content);
+
+await rag.FinalizeAsync();
+```
+
+### Download (prebuilt)
+Grab `LightRAG.NET-v*-netstandard2.1.zip` from [**Releases**](https://github.com/skykim/LightRAG.NET/releases) —
+it contains the engine DLLs plus transitive dependencies. For Unity, drop them into
+`Assets/Plugins/` (Unity supplies `Newtonsoft.Json` through the
+`com.unity.nuget.newtonsoft-json` package, so delete that one DLL to avoid a duplicate-assembly conflict).
+
+Full .NET documentation: [`LightRAG.NET/README.md`](./LightRAG.NET/README.md).
+
+---
+
 <div align="center">
 
 <div style="margin: 20px 0;">

@@ -1,0 +1,614 @@
+namespace LightRAG.Core.Prompts;
+
+/// <summary>
+/// All LLM prompt templates, ported verbatim from <c>lightrag/prompt.py</c>'s <c>PROMPTS</c> dict.
+/// Placeholders use the <c>{name}</c> convention rendered by <see cref="PromptRenderer"/>.
+/// The YAML profile-loading machinery from the Python module is intentionally omitted.
+/// </summary>
+public static class PromptTemplates
+{
+    /// <summary>Atomic field separator marker used in text-mode extraction output.</summary>
+    public const string DefaultTupleDelimiter = "<|#|>";
+
+    /// <summary>Marker the LLM emits once extraction is complete.</summary>
+    public const string DefaultCompletionDelimiter = "<|COMPLETE|>";
+
+    public const string DefaultEntityTypesGuidance =
+"""
+Classify each entity using one of the following types. If no type fits, use `Other`.
+
+- Person: Human individuals, real or fictional
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Organization: Companies, institutions, government bodies, groups
+- Location: Geographic places (cities, countries, buildings, regions)
+- Event: Occurrences, incidents, ceremonies, meetings
+- Concept: Abstract ideas, theories, principles, beliefs
+- Method: Procedures, techniques, algorithms, workflows
+- Content: Creative or informational works (books, articles, films, reports)
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
+""";
+
+    public const string EntityExtractionSystemPrompt =
+"""
+---Role---
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` section of user prompt.
+
+---Instructions---
+1. **Entity Extraction:**
+  - Identify clearly defined and meaningful entities in the `---Input Text---` section of user prompt.
+  - For each entity, extract:
+    - `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+    - `entity_type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
+    - `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+
+2. **Relationship Extraction:**
+  - Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+  - If a single statement describes a relationship involving more than two entities, decompose it into multiple binary relationships.
+  - For each binary relationship, extract:
+    - `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
+    - `relationship_keywords`: One or more high-level keywords summarizing the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
+    - `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities.
+
+3. **Record Types:**
+  - `entity` is used only for entity rows and those rows always contain exactly 4 tuple parts total.
+  - `relation` is used only for relationship rows and those rows always contain exactly 5 tuple parts total.
+  - A row with two entity names plus relationship keywords and a relationship description must start with `relation`, never `entity`.
+  - After the last entity row, switch prefixes to `relation` for every relationship row.
+
+4. **Output Format:**
+  - Entity row: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+  - Relation row: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+  - Wrong: `entity{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
+  - Correct: `relation{tuple_delimiter}Alice{tuple_delimiter}Acme{tuple_delimiter}founded{tuple_delimiter}Alice founded Acme`
+
+5. **Delimiter Usage:**
+  - The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
+  - Incorrect: `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
+  - Correct: `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
+
+6. **Output Order & Deduplication:**
+  - Output all extracted entities first, followed by all extracted relationships.
+  - Output at most {max_total_records} total rows across entities and relationships in this response.
+  - Output at most {max_entity_records} entity rows in this response.
+  - Output fewer rows if fewer high-value items are present. Do not try to fill the limit.
+  - Only output relationship rows whose source and target entities are both included in the selected entity rows for this response.
+  - If the limit is reached, stop adding new rows immediately and output `{completion_delimiter}`.
+  - Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
+  - Avoid outputting duplicate relationships.
+  - Within the list of relationships, output the relationships that are **most significant** to the core meaning of the input text first.
+
+7. **Context & Language:**
+  - Ensure all entity names and descriptions are written in the **third person**.
+  - Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+  - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+8. **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships have been completely extracted and outputted.
+
+---Entity Types---
+{entity_types_guidance}
+
+---Examples---
+{examples}
+""";
+
+    public const string EntityExtractionUserPrompt =
+"""
+---Task---
+Extract entities and relationships from the `---Input Text---` session below.
+
+---Instructions---
+1. **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
+2. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value items are present. Only output relationship rows whose source and target entities are both included in this response.
+3. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+4. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
+5. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+
+---Input Text---
+```
+{input_text}
+```
+
+---Output---
+""";
+
+    public const string EntityContinueExtractionUserPrompt =
+"""
+---Task---
+Based on the last extraction task, identify and extract any missed or incorrectly formatted entities and relationships from the input text.
+
+---Instructions---
+1. **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
+2. **Focus on Corrections/Additions:**
+  - **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
+  - If an entity or relationship was **missed** in the last task, extract and output it now according to the system format.
+  - If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
+  - Any corrected relationship row must be emitted with the literal `relation` prefix, never `entity`.
+3. **Quantity Limits:** In this response, output at most {max_total_records} total rows and at most {max_entity_records} entity rows. Output fewer rows if fewer high-value corrections or additions remain. A relationship row may reference entities that were already extracted correctly in the previous response. Do not re-output those entities unless they were missing or need correction.
+4. **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+5. **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented. If the row limit is reached, output `{completion_delimiter}` immediately after the last allowed row.
+6. **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+
+---Output---
+""";
+
+    public static readonly string[] EntityExtractionExamples =
+    [
+"""
+---Entity Types---
+- Person: Human individuals, real or fictional
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Concept: Abstract ideas, theories, principles, beliefs
+
+---Input Text---
+```
+while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
+
+The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
+
+It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
+```
+
+---Output---
+entity{tuple_delimiter}Alex{tuple_delimiter}Person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
+entity{tuple_delimiter}Taylor{tuple_delimiter}Person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
+entity{tuple_delimiter}Jordan{tuple_delimiter}Person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
+entity{tuple_delimiter}Cruz{tuple_delimiter}Person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
+entity{tuple_delimiter}The Device{tuple_delimiter}Artifact{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
+entity{tuple_delimiter}Discovery{tuple_delimiter}Concept{tuple_delimiter}Discovery represents the shared intellectual pursuit that unites Jordan and Alex in opposition to Cruz's controlling worldview.
+relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
+relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
+relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
+relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
+relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
+{completion_delimiter}
+""",
+"""
+---Entity Types---
+- Person: Human individuals, real or fictional
+- Location: Geographic places (cities, countries, buildings, regions)
+- Creature: Non-human living beings (animals, mythical beings, etc.)
+- Method: Procedures, techniques, algorithms, workflows
+- Organization: Companies, institutions, government bodies, groups
+- Content: Creative or informational works (books, articles, films, reports)
+- NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
+
+---Input Text---
+```
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest to document the population decline of the Bornean orangutan. Using transect sampling — a method where researchers walk predetermined line paths and record every animal sighting within a fixed distance — her team estimated that fewer than 1,500 individuals remained in the surveyed region.
+
+The expedition was funded by the Global Wildlife Conservation Institute and produced a landmark report titled "Primate Decline in Insular Southeast Asia." Vasquez attributed the collapse primarily to peat-soil destruction caused by palm oil plantation expansion, which had converted over 40% of the surveyed forest area within a decade.
+```
+
+---Output---
+entity{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Person{tuple_delimiter}Dr. Elena Vasquez is a field researcher who led an expedition to document orangutan population decline in Borneo.
+entity{tuple_delimiter}Borneo Rainforest{tuple_delimiter}Location{tuple_delimiter}The Borneo rainforest is the field site of the expedition and the primary habitat of the Bornean orangutan.
+entity{tuple_delimiter}Bornean Orangutan{tuple_delimiter}Creature{tuple_delimiter}The Bornean orangutan is a primate species whose population was found to have declined to fewer than 1,500 individuals in the surveyed region.
+entity{tuple_delimiter}Transect Sampling{tuple_delimiter}Method{tuple_delimiter}Transect sampling is a wildlife survey technique where researchers walk predetermined paths and record animal sightings within a fixed lateral distance.
+entity{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Organization{tuple_delimiter}The Global Wildlife Conservation Institute funded the expedition led by Dr. Vasquez.
+entity{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}Content{tuple_delimiter}A landmark research report produced by Vasquez's expedition documenting primate population decline in the region.
+entity{tuple_delimiter}Peat Soil{tuple_delimiter}NaturalObject{tuple_delimiter}Peat soil is a natural substrate in the Borneo rainforest that has been destroyed by palm oil plantation expansion.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Bornean Orangutan{tuple_delimiter}field research, population survey{tuple_delimiter}Dr. Vasquez led the expedition that documented the population decline of the Bornean orangutan.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Transect Sampling{tuple_delimiter}methodology, research application{tuple_delimiter}Dr. Vasquez's team used transect sampling to estimate the orangutan population.
+relation{tuple_delimiter}Global Wildlife Conservation Institute{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}funding, research support{tuple_delimiter}The institute funded the expedition led by Dr. Vasquez.
+relation{tuple_delimiter}Dr. Elena Vasquez{tuple_delimiter}Primate Decline in Insular Southeast Asia{tuple_delimiter}authorship, research output{tuple_delimiter}Dr. Vasquez's expedition produced the landmark report on primate decline.
+relation{tuple_delimiter}Peat Soil{tuple_delimiter}Borneo Rainforest{tuple_delimiter}habitat composition, ecological destruction{tuple_delimiter}Peat soil destruction in the Borneo rainforest was caused by palm oil plantation expansion and is a primary driver of orangutan decline.
+{completion_delimiter}
+""",
+"""
+---Entity Types---
+- Content: Creative or informational works (books, articles, films, reports)
+- Artifact: Physical or digital objects created by humans (tools, software, devices)
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Method: Procedures, techniques, algorithms, workflows
+- Data: Quantitative or structured information (statistics, datasets, measurements)
+- Concept: Abstract ideas, theories, principles, beliefs
+
+---Input Text---
+```
+The 2023 edition of "Advances in Neural Architecture Search" synthesized findings from over 200 peer-reviewed papers and introduced a new benchmarking framework called NASBench-360, designed to evaluate search algorithms across diverse task domains. The publication was co-authored by Dr. Priya Nair and Dr. Luca Ferretti of the DeepSystems Research Lab.
+
+NASBench-360 measures three key metrics: search efficiency (time-to-solution), model accuracy on held-out test sets, and computational cost in GPU-hours. Early results showed that evolutionary search algorithms outperformed gradient-based methods by 12% on accuracy while consuming 30% fewer GPU-hours on vision tasks.
+```
+
+---Output---
+entity{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}Content{tuple_delimiter}A 2023 publication that synthesizes findings from over 200 papers and introduces the NASBench-360 benchmarking framework.
+entity{tuple_delimiter}NASBench-360{tuple_delimiter}Artifact{tuple_delimiter}NASBench-360 is a benchmarking framework introduced to evaluate neural architecture search algorithms across diverse task domains.
+entity{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Person{tuple_delimiter}Dr. Priya Nair is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Person{tuple_delimiter}Dr. Luca Ferretti is a co-author of the publication and a researcher at the DeepSystems Research Lab.
+entity{tuple_delimiter}DeepSystems Research Lab{tuple_delimiter}Organization{tuple_delimiter}The DeepSystems Research Lab is the institution where the co-authors of the publication are affiliated.
+entity{tuple_delimiter}Evolutionary Search{tuple_delimiter}Method{tuple_delimiter}Evolutionary search is a class of neural architecture search algorithms that outperformed gradient-based methods in the NASBench-360 evaluation.
+entity{tuple_delimiter}Gradient-Based Search{tuple_delimiter}Method{tuple_delimiter}Gradient-based search is a class of neural architecture search algorithms that was benchmarked against evolutionary search in NASBench-360.
+entity{tuple_delimiter}GPU-Hours{tuple_delimiter}Data{tuple_delimiter}GPU-hours is a metric used in NASBench-360 to measure the computational cost of neural architecture search algorithms.
+entity{tuple_delimiter}Neural Architecture Search{tuple_delimiter}Concept{tuple_delimiter}Neural architecture search is the automated process of designing optimal neural network architectures, the central topic of the publication.
+relation{tuple_delimiter}Dr. Priya Nair{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Priya Nair co-authored the publication.
+relation{tuple_delimiter}Dr. Luca Ferretti{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}authorship{tuple_delimiter}Dr. Luca Ferretti co-authored the publication.
+relation{tuple_delimiter}Advances in Neural Architecture Search{tuple_delimiter}NASBench-360{tuple_delimiter}introduces, benchmarking{tuple_delimiter}The publication introduced the NASBench-360 framework.
+relation{tuple_delimiter}Evolutionary Search{tuple_delimiter}Gradient-Based Search{tuple_delimiter}performance comparison{tuple_delimiter}Evolutionary search outperformed gradient-based methods by 12% on accuracy and used 30% fewer GPU-hours on vision tasks.
+relation{tuple_delimiter}NASBench-360{tuple_delimiter}GPU-Hours{tuple_delimiter}evaluation metric{tuple_delimiter}NASBench-360 uses GPU-hours as one of three key metrics to measure computational cost.
+{completion_delimiter}
+""",
+    ];
+
+    public const string EntityExtractionJsonSystemPrompt =
+"""
+---Role---
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the `---Input Text---` session of user prompt.
+
+---Instructions---
+1. **Entity Extraction:**
+  - **Identification:** Identify clearly defined and meaningful entities in the `---Input Text---` session of user prompt.
+  - **Entity Details:** For each identified entity, extract the following information:
+    - `name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
+    - `type`: Categorize the entity using the type guidance provided in the `---Entity Types---` section below. If none of the provided entity types apply, classify it as `Other`.
+    - `description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
+
+2. **Relationship Extraction:**
+  - **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
+  - **Relationship Details:** For each binary relationship, extract the following fields:
+    - `source`: The name of the source entity. Ensure **consistent naming** with entity extraction.
+    - `target`: The name of the target entity. Ensure **consistent naming** with entity extraction.
+    - `keywords`: One or more high-level keywords summarizing the relationship, separated by commas.
+    - `description`: A concise explanation of the nature of the relationship between the source and target entities.
+
+3. **Relationship Direction & Duplication:**
+  - Treat all relationships as **undirected** unless explicitly stated otherwise.
+  - Avoid outputting duplicate relationships.
+
+4. **Output Limits & Prioritization:**
+  - Output at most {max_total_records} total records across `entities` and `relationships` in this response.
+  - Output at most {max_entity_records} entity objects in this response.
+  - Only output relationship objects whose `source` and `target` are both included in the selected `entities` list for this response.
+
+5. **Language & Proper Nouns:**
+  - The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
+  - Proper nouns should be retained in their original language if a proper translation is not available.
+
+6. **JSON Contract:**
+  - Return one valid JSON object with `entities` and `relationships` arrays only.
+
+---Entity Types---
+{entity_types_guidance}
+
+---Examples---
+{examples}
+""";
+
+    public const string EntityExtractionJsonUserPrompt =
+"""
+---Task---
+Extract entities and relationships from the `---Input Text---` session below.
+
+---Instructions---
+1. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays. Do not include any introductory or concluding remarks, explanations, markdown code fences, or any other text before or after the JSON.
+2. **Quantity Limits:** In this response, output at most {max_total_records} total records and at most {max_entity_records} entity objects.
+3. **Output Language:** Ensure the output language is {language}. Proper nouns must be kept in their original language and not translated.
+
+---Entity Types---
+{entity_types_guidance}
+
+---Input Text---
+```
+{input_text}
+```
+
+---Output---
+""";
+
+    public const string EntityContinueExtractionJsonUserPrompt =
+"""
+---Task---
+Based on the last extraction task, identify and extract any **missed or incorrectly described** entities and relationships from the `---Input Text---` session.
+
+---Instructions---
+1. **Focus on Corrections/Additions:** Do NOT re-output entities and relationships that were correctly and fully extracted. Add missed items; re-output corrected versions of incorrect ones.
+2. **Strict Adherence to JSON Format:** Your output MUST be a valid JSON object with `entities` and `relationships` arrays, with no surrounding text.
+3. **Quantity Limits:** Output at most {max_total_records} total records and at most {max_entity_records} entity objects.
+4. **Output Language:** Ensure the output language is {language}.
+5. **If nothing was missed or needs correction**, output: `{{"entities": [], "relationships": []}}`
+
+---Output---
+""";
+
+    public static readonly string[] EntityExtractionJsonExamples =
+    [
+"""
+---Entity Types---
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Location: Geographic places (cities, countries, buildings, regions)
+
+---Input Text---
+```
+Dr. Elena Vasquez led a field expedition to the Borneo rainforest, funded by the Global Wildlife Conservation Institute.
+```
+
+---Output---
+{
+  "entities": [
+    {"name": "Dr. Elena Vasquez", "type": "Person", "description": "Dr. Elena Vasquez is a field researcher who led an expedition to the Borneo rainforest."},
+    {"name": "Borneo Rainforest", "type": "Location", "description": "The Borneo rainforest is the field site of the expedition."},
+    {"name": "Global Wildlife Conservation Institute", "type": "Organization", "description": "The institute funded the expedition led by Dr. Vasquez."}
+  ],
+  "relationships": [
+    {"source": "Global Wildlife Conservation Institute", "target": "Dr. Elena Vasquez", "keywords": "funding, research support", "description": "The institute funded the expedition led by Dr. Vasquez."},
+    {"source": "Dr. Elena Vasquez", "target": "Borneo Rainforest", "keywords": "field research", "description": "Dr. Vasquez led a field expedition to the Borneo rainforest."}
+  ]
+}
+""",
+    ];
+
+    public const string SummarizeEntityDescriptions =
+"""
+---Role---
+You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
+
+---Task---
+Your task is to synthesize a list of descriptions of a given entity or relation into a single, comprehensive, and cohesive summary.
+
+---Instructions---
+1. Input Format: The description list is provided in JSON format. Each JSON object (representing a single description) appears on a new line within the `Description List` section.
+2. Output Format: The merged description will be returned as plain text, presented in multiple paragraphs, without any additional formatting or extraneous comments before or after the summary.
+3. Comprehensiveness: The summary must integrate all key information from *every* provided description. Do not omit any important facts or details.
+4. Context: Ensure the summary is written from an objective, third-person perspective; explicitly mention the name of the entity or relation for full clarity and context.
+5. Context & Objectivity:
+  - Write the summary from an objective, third-person perspective.
+  - Explicitly mention the full name of the entity or relation at the beginning of the summary to ensure immediate clarity and context.
+6. Conflict Handling:
+  - In cases of conflicting or inconsistent descriptions, first determine if these conflicts arise from multiple, distinct entities or relationships that share the same name.
+  - If distinct entities/relations are identified, summarize each one *separately* within the overall output.
+  - If conflicts within a single entity/relation (e.g., historical discrepancies) exist, attempt to reconcile them or present both viewpoints with noted uncertainty.
+7. Length Constraint:The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
+8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
+  - The entire output must be written in {language}.
+  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+---Input---
+{description_type} Name: {description_name}
+
+Description List:
+
+```
+{description_list}
+```
+
+---Output---
+""";
+
+    public const string FailResponse =
+        "Sorry, I'm not able to provide an answer to that question.[no-context]";
+
+    public const string RagResponse =
+"""
+---Role---
+
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
+
+---Goal---
+
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Knowledge Graph and Document Chunks found in the **Context**.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
+
+---Instructions---
+
+1. Step-by-Step Instruction:
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
+
+2. Content & Grounding:
+  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+
+3. Formatting & Language:
+  - The response MUST be in the same language as the user query.
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
+  - The response should be presented in {response_type}.
+
+4. References Section Format:
+  - The References section should be under heading: `### References`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+
+5. Reference Section Example:
+```
+### References
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
+```
+
+6. Additional Instructions: {user_prompt}
+
+
+---Context---
+
+{context_data}
+""";
+
+    public const string NaiveRagResponse =
+"""
+---Role---
+
+You are an expert AI assistant specializing in synthesizing information from a provided knowledge base. Your primary function is to answer user queries accurately by ONLY using the information within the provided **Context**.
+
+---Goal---
+
+Generate a comprehensive, well-structured answer to the user query.
+The answer must integrate relevant facts from the Document Chunks found in the **Context**.
+Consider the conversation history if provided to maintain conversational flow and avoid repeating information.
+
+---Instructions---
+
+1. Step-by-Step Instruction:
+  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
+  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
+  - Do not generate anything after the reference section.
+
+2. Content & Grounding:
+  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
+  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+
+3. Formatting & Language:
+  - The response MUST be in the same language as the user query.
+  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
+  - The response should be presented in {response_type}.
+
+4. References Section Format:
+  - The References section should be under heading: `### References`
+  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
+  - The Document Title in the citation must retain its original language.
+  - Output each citation on an individual line
+  - Provide maximum of 5 most relevant citations.
+  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+
+5. Reference Section Example:
+```
+### References
+
+- [1] Document Title One
+- [2] Document Title Two
+- [3] Document Title Three
+```
+
+6. Additional Instructions: {user_prompt}
+
+
+---Context---
+
+{content_data}
+""";
+
+    public const string KgQueryContext =
+"""
+
+Knowledge Graph Data (Entity):
+
+```json
+{entities_str}
+```
+
+Knowledge Graph Data (Relationship):
+
+```json
+{relations_str}
+```
+
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`; the optional `content_headings` field gives the chunk's heading path within its source document, e.g. `Section 1 → Subsection 1.2`):
+
+```json
+{text_chunks_str}
+```
+
+Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+
+```
+{reference_list_str}
+```
+
+""";
+
+    public const string NaiveQueryContext =
+"""
+
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`; the optional `content_headings` field gives the chunk's heading path within its source document, e.g. `Section 1 → Subsection 1.2`):
+
+```json
+{text_chunks_str}
+```
+
+Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+
+```
+{reference_list_str}
+```
+
+""";
+
+    public const string KeywordsExtraction =
+"""
+---Role---
+You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
+
+---Goal---
+Given a user query, your task is to extract two distinct types of keywords:
+1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
+2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
+
+---Instructions & Constraints---
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), comments, or any other text before or after the JSON.
+2. **Exact JSON Shape**: The JSON object must contain exactly these two keys:
+   - `"high_level_keywords"`: an array of strings
+   - `"low_level_keywords"`: an array of strings
+3. **JSON Boundary**: The first character of your response must be `{{` and the last character must be `}}`.
+4. **Source of Truth**: All keywords must be explicitly derived from the user query. Do not infer unsupported facts. Do not invent entities, products, organizations, dates, or technical terms that are not grounded in the query.
+5. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+6. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), return:
+   `{{"high_level_keywords": [], "low_level_keywords": []}}`
+7. **No Duplicates**: Do not repeat the same keyword within a list. Keep the lists short and high-signal.
+8. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
+
+---Examples---
+{examples}
+
+---Real Data---
+User Query: {query}
+
+---Output---
+Output:
+""";
+
+    public static readonly string[] KeywordsExtractionExamples =
+    [
+"""
+Example 1:
+
+Query: "How does international trade influence global economic stability?"
+
+Output:
+{
+  "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
+  "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
+}
+""",
+"""
+Example 2:
+
+Query: "What are the environmental consequences of deforestation on biodiversity?"
+
+Output:
+{
+  "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
+  "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
+}
+""",
+"""
+Example 3:
+
+Query: "What is the role of education in reducing poverty?"
+
+Output:
+{
+  "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
+  "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
+}
+""",
+    ];
+}
