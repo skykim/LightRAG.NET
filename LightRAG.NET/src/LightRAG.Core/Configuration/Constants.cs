@@ -11,6 +11,13 @@ public static class Constants
     public const string DefaultSummaryLanguage = "English";
     public const int DefaultMaxGleaning = 1;
     public const int DefaultEntityNameMaxLength = 256;
+
+    /// <summary>
+    /// UTF-8 byte limit for entity identifiers. Some vector backends (e.g. Milvus) validate
+    /// VARCHAR max_length in BYTES, so a CJK name within the character limit can still overflow
+    /// (256 Chinese chars ~= 694 bytes &gt; 512). Ported from <c>DEFAULT_ENTITY_NAME_MAX_BYTES</c>.
+    /// </summary>
+    public const int DefaultEntityNameMaxBytes = 512;
     public const int DefaultMaxExtractionRecords = 100;
     public const int DefaultMaxExtractionEntities = 40;
 
@@ -32,6 +39,12 @@ public static class Constants
     public const int DefaultMaxTotalTokens = 30000;
     public const float DefaultCosineThreshold = 0.2f;
     public const int DefaultRelatedChunkNumber = 5;
+
+    /// <summary>KG chunk-selection strategy: "VECTOR" (cosine similarity) or "WEIGHT" (weighted polling).</summary>
+    public const string DefaultKgChunkPickMethod = "VECTOR";
+
+    /// <summary>Minimum rerank score to retain a chunk when reranking is enabled.</summary>
+    public const double DefaultMinRerankScore = 0.5;
 
     // Source-id limits
     public const int DefaultMaxSourceIdsPerEntity = 200;

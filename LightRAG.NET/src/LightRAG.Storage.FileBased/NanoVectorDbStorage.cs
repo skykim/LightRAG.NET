@@ -24,6 +24,7 @@ public sealed class NanoVectorDbStorage : FileStorageBase, IVectorStorage
     private readonly Dictionary<string, StorageRecord> _pending = new();
     private readonly string _filePath;
     private readonly int _batchNum;
+    private readonly HashSet<string>? _metaFields;
     private bool _dirty;
 
     public EmbeddingFunc EmbeddingFunc { get; }
@@ -36,12 +37,16 @@ public sealed class NanoVectorDbStorage : FileStorageBase, IVectorStorage
         EmbeddingFunc embeddingFunc,
         float cosineBetterThanThreshold = Constants.DefaultCosineThreshold,
         string workspace = "",
-        int embeddingBatchNum = Constants.DefaultEmbeddingBatchNum)
+        int embeddingBatchNum = Constants.DefaultEmbeddingBatchNum,
+        IReadOnlyCollection<string>? metaFields = null)
         : base(workingDir, @namespace, workspace)
     {
         EmbeddingFunc = embeddingFunc;
         CosineBetterThanThreshold = cosineBetterThanThreshold;
         _batchNum = embeddingBatchNum;
+        // When set, only these caller fields are persisted (plus id/created_at), matching Python's
+        // meta_fields whitelist. When null, all caller fields are kept (back-compat for direct use).
+        _metaFields = metaFields is null ? null : [.. metaFields];
         _filePath = Path.Combine(Directory, $"vdb_{@namespace}.json");
     }
 
@@ -93,7 +98,23 @@ public sealed class NanoVectorDbStorage : FileStorageBase, IVectorStorage
         var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         foreach (var (id, record) in data)
         {
-            var stored = new StorageRecord(record) { ["id"] = id, ["created_at"] = createdAt };
+            StorageRecord stored;
+            if (_metaFields is null)
+            {
+                stored = new StorageRecord(record) { ["id"] = id, ["created_at"] = createdAt };
+            }
+            else
+            {
+                // Persist only whitelisted meta fields (plus id/created_at), like Python's nano-vectordb.
+                stored = new StorageRecord { ["id"] = id, ["created_at"] = createdAt };
+                foreach (var (k, v) in record)
+                {
+                    if (_metaFields.Contains(k))
+                    {
+                        stored[k] = v;
+                    }
+                }
+            }
             _pending[id] = stored; // overwrites prior pending for same id (re-embed)
         }
         return Task.CompletedTask;

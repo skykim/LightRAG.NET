@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Xml.Linq;
 using LightRAG.Core.Abstractions;
 
@@ -162,47 +163,83 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
 
     public Task<KnowledgeGraph> GetKnowledgeGraphAsync(string nodeLabel, int maxDepth = 3, int maxNodes = 1000, CancellationToken cancellationToken = default)
     {
-        var selected = new List<string>();
+        int Degree(string n) => _adjacency.TryGetValue(n, out var nb) ? nb.Count : 0;
+
+        List<string> selected;
         var truncated = false;
 
         if (nodeLabel == "*")
         {
-            selected = _nodes.Keys.Take(maxNodes).ToList();
-            truncated = _nodes.Count > maxNodes;
+            // Highest-degree nodes first, then cap to maxNodes (ports networkx get_knowledge_graph "*").
+            var sorted = _nodes.Keys.OrderByDescending(Degree).ToList();
+            truncated = sorted.Count > maxNodes;
+            selected = sorted.Take(maxNodes).ToList();
         }
         else if (_nodes.ContainsKey(nodeLabel))
         {
-            // BFS from the start node up to maxDepth / maxNodes.
-            var visited = new HashSet<string> { nodeLabel };
-            var frontier = new Queue<(string Node, int Depth)>();
-            frontier.Enqueue((nodeLabel, 0));
-            while (frontier.Count > 0)
+            // Degree-prioritized level BFS: at each depth, expand highest-degree nodes first.
+            var bfsNodes = new List<string>();
+            var visited = new HashSet<string>();
+            var queue = new Queue<(string Node, int Depth, int Degree)>();
+            queue.Enqueue((nodeLabel, 0, Degree(nodeLabel)));
+            var hasUnexplored = false;
+
+            while (queue.Count > 0 && bfsNodes.Count < maxNodes)
             {
-                var (node, depth) = frontier.Dequeue();
-                selected.Add(node);
-                if (selected.Count >= maxNodes)
+                var currentDepth = queue.Peek().Depth;
+                var level = new List<(string Node, int Depth, int Degree)>();
+                while (queue.Count > 0 && queue.Peek().Depth == currentDepth)
                 {
-                    truncated = true;
-                    break;
+                    level.Add(queue.Dequeue());
                 }
-                if (depth >= maxDepth)
+                level.Sort((a, b) => b.Degree.CompareTo(a.Degree)); // highest degree first
+
+                foreach (var (node, depth, _) in level)
                 {
-                    continue;
-                }
-                foreach (var neighbor in _adjacency.GetValueOrDefault(node) ?? [])
-                {
-                    if (visited.Add(neighbor))
+                    if (visited.Add(node))
                     {
-                        frontier.Enqueue((neighbor, depth + 1));
+                        bfsNodes.Add(node);
+                        var unvisited = (_adjacency.GetValueOrDefault(node) ?? []).Where(n => !visited.Contains(n)).ToList();
+                        if (depth < maxDepth)
+                        {
+                            foreach (var nb in unvisited)
+                            {
+                                queue.Enqueue((nb, depth + 1, Degree(nb)));
+                            }
+                        }
+                        else if (unvisited.Count > 0)
+                        {
+                            hasUnexplored = true;
+                        }
+                    }
+                    if (bfsNodes.Count >= maxNodes)
+                    {
+                        break;
                     }
                 }
             }
+
+            // Truncation flag set only when the max_nodes cap is hit (matches Python).
+            if (((queue.Count > 0 && bfsNodes.Count >= maxNodes) || hasUnexplored) && bfsNodes.Count >= maxNodes)
+            {
+                truncated = true;
+            }
+            selected = bfsNodes;
+        }
+        else
+        {
+            return Task.FromResult(new KnowledgeGraph());
         }
 
         var selectedSet = selected.ToHashSet();
         var graph = new KnowledgeGraph { IsTruncated = truncated };
-        foreach (var id in selected)
+        // Node/edge order follows the original graph's insertion order (networkx subgraph semantics).
+        foreach (var id in _nodes.Keys)
         {
+            if (!selectedSet.Contains(id))
+            {
+                continue;
+            }
             graph.Nodes.Add(new KnowledgeGraphNode
             {
                 Id = id,
@@ -217,6 +254,7 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
                 graph.Edges.Add(new KnowledgeGraphEdge
                 {
                     Id = $"{key.Item1}-{key.Item2}",
+                    Type = "DIRECTED",
                     Source = key.Item1,
                     Target = key.Item2,
                     Properties = new Dictionary<string, object?>(data),
@@ -267,6 +305,10 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
         var nodeAttrs = _nodes.Values.SelectMany(d => d.Keys).Distinct().ToList();
         var edgeAttrs = _edges.Values.SelectMany(d => d.Keys).Distinct().ToList();
 
+        // Infer a GraphML type per attribute from its values (networkx write_graphml parity).
+        var nodeTypes = nodeAttrs.ToDictionary(a => a, a => InferGraphmlType(_nodes.Values.Where(d => d.ContainsKey(a)).Select(d => d[a])));
+        var edgeTypes = edgeAttrs.ToDictionary(a => a, a => InferGraphmlType(_edges.Values.Where(d => d.ContainsKey(a)).Select(d => d[a])));
+
         var graph = new XElement(Gml + "graph", new XAttribute("edgedefault", "undirected"));
 
         foreach (var (id, data) in _nodes)
@@ -274,7 +316,7 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
             var node = new XElement(Gml + "node", new XAttribute("id", id));
             foreach (var (attr, value) in data)
             {
-                node.Add(new XElement(Gml + "data", new XAttribute("key", "n_" + attr), value?.ToString() ?? string.Empty));
+                node.Add(new XElement(Gml + "data", new XAttribute("key", "n_" + attr), FormatGraphmlValue(value, nodeTypes[attr])));
             }
             graph.Add(node);
         }
@@ -286,7 +328,7 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
                 new XAttribute("target", key.Item2));
             foreach (var (attr, value) in data)
             {
-                edge.Add(new XElement(Gml + "data", new XAttribute("key", "e_" + attr), value?.ToString() ?? string.Empty));
+                edge.Add(new XElement(Gml + "data", new XAttribute("key", "e_" + attr), FormatGraphmlValue(value, edgeTypes[attr])));
             }
             graph.Add(edge);
         }
@@ -296,13 +338,13 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
         {
             root.Add(new XElement(Gml + "key",
                 new XAttribute("id", "n_" + attr), new XAttribute("for", "node"),
-                new XAttribute("attr.name", attr), new XAttribute("attr.type", "string")));
+                new XAttribute("attr.name", attr), new XAttribute("attr.type", nodeTypes[attr])));
         }
         foreach (var attr in edgeAttrs)
         {
             root.Add(new XElement(Gml + "key",
                 new XAttribute("id", "e_" + attr), new XAttribute("for", "edge"),
-                new XAttribute("attr.name", attr), new XAttribute("attr.type", "string")));
+                new XAttribute("attr.name", attr), new XAttribute("attr.type", edgeTypes[attr])));
         }
         root.Add(graph);
 
@@ -327,11 +369,15 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
             return;
         }
 
-        // Map key id -> attr.name (domain prefix already encodes node/edge).
-        var keyNames = root.Elements(Gml + "key")
-            .ToDictionary(
-                k => k.Attribute("id")!.Value,
-                k => k.Attribute("attr.name")?.Value ?? k.Attribute("id")!.Value);
+        // Map key id -> (attr.name, attr.type) so values coerce back to their declared type.
+        var keyNames = new Dictionary<string, string>();
+        var keyTypes = new Dictionary<string, string>();
+        foreach (var k in root.Elements(Gml + "key"))
+        {
+            var keyId = k.Attribute("id")!.Value;
+            keyNames[keyId] = k.Attribute("attr.name")?.Value ?? keyId;
+            keyTypes[keyId] = k.Attribute("attr.type")?.Value ?? "string";
+        }
 
         var graph = root.Element(Gml + "graph");
         if (graph is null)
@@ -346,7 +392,7 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
             foreach (var d in node.Elements(Gml + "data"))
             {
                 var keyId = d.Attribute("key")!.Value;
-                data[keyNames.GetValueOrDefault(keyId, keyId)] = d.Value;
+                data[keyNames.GetValueOrDefault(keyId, keyId)] = CoerceGraphmlValue(d.Value, keyTypes.GetValueOrDefault(keyId, "string"));
             }
             _nodes[id] = data;
             _adjacency.TryAdd(id, []);
@@ -360,7 +406,7 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
             foreach (var d in edge.Elements(Gml + "data"))
             {
                 var keyId = d.Attribute("key")!.Value;
-                data[keyNames.GetValueOrDefault(keyId, keyId)] = d.Value;
+                data[keyNames.GetValueOrDefault(keyId, keyId)] = CoerceGraphmlValue(d.Value, keyTypes.GetValueOrDefault(keyId, "string"));
             }
             _edges[Canon(source, target)] = data;
             _adjacency.TryAdd(source, []);
@@ -369,4 +415,59 @@ public sealed class GraphmlGraphStorage : FileStorageBase, IGraphStorage
             _adjacency[target].Add(source);
         }
     }
+
+    // ---- GraphML typed-attribute helpers (networkx round-trip parity) ----
+
+    /// <summary>Infer the GraphML attr.type ("boolean"/"long"/"double"/"string") from a column of values.</summary>
+    private static string InferGraphmlType(IEnumerable<object?> values)
+    {
+        bool sawBool = false, sawLong = false, sawDouble = false, sawOther = false, any = false;
+        foreach (var v in values)
+        {
+            if (v is null)
+            {
+                continue;
+            }
+            any = true;
+            switch (v)
+            {
+                case bool: sawBool = true; break;
+                case long or int or short or byte: sawLong = true; break;
+                case double or float or decimal: sawDouble = true; break;
+                default: sawOther = true; break;
+            }
+        }
+        if (!any || sawOther)
+        {
+            return "string";
+        }
+        if (sawBool)
+        {
+            return sawLong || sawDouble ? "string" : "boolean";
+        }
+        if (sawDouble)
+        {
+            return "double";
+        }
+        return sawLong ? "long" : "string";
+    }
+
+    private static string FormatGraphmlValue(object? value, string type) => value switch
+    {
+        null => string.Empty,
+        bool b => b ? "true" : "false",
+        _ when type == "double" => Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString("R", CultureInfo.InvariantCulture),
+        _ when type == "long" => Convert.ToInt64(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? string.Empty,
+    };
+
+    private static object? CoerceGraphmlValue(string raw, string type) => type switch
+    {
+        "long" or "int" or "integer" when long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l) => l,
+        "double" or "float" or "real" when double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) => d,
+        "boolean" or "bool" => raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+            ? true
+            : raw.Equals("false", StringComparison.OrdinalIgnoreCase) ? false : raw,
+        _ => raw,
+    };
 }

@@ -178,7 +178,8 @@ public sealed class DocumentPipeline
         string content, string filePath, DocStatus status, string createdAt, string updatedAt,
         IReadOnlyList<string>? chunkIds, string? errorMsg = null)
     {
-        var summary = content.Length <= 100 ? content : content[..100];
+        // Matches Python get_content_summary(content, max_length=250): 250 chars + "..." when longer.
+        var summary = content.Length <= 250 ? content : content[..250] + "...";
         var record = new StorageRecord
         {
             ["status"] = status.ToWireValue(),

@@ -18,8 +18,17 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- Compile the actual Unity CLIP tokenizer here to validate token-id parity with open_clip. -->
+  <!--
+    Compile the actual Unity CLIP tokenizer here to validate token-id parity with open_clip.
+    The Unity sidecar lives in a sibling repo (lightrag-unity) that is not always checked out.
+    When it is absent we skip compiling both the file and its parity test so the rest of the
+    suite still builds; when present, the parity test runs exactly as before.
+  -->
+  <PropertyGroup Condition="Exists('..\..\..\lightrag-unity\Assets\LightRAG\MobileCLIP\ClipBpeTokenizer.cs')">
+    <DefineConstants>$(DefineConstants);CLIP_TOKENIZER_AVAILABLE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\..\..\lightrag-unity\Assets\LightRAG\MobileCLIP\ClipBpeTokenizer.cs')">
     <Compile Include="..\..\..\lightrag-unity\Assets\LightRAG\MobileCLIP\ClipBpeTokenizer.cs" Link="MobileCLIP\ClipBpeTokenizer.cs" />
   </ItemGroup>
 

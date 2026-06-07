@@ -17,7 +17,7 @@ public sealed record ExtractionOptions
     public string Language { get; init; } = Constants.DefaultSummaryLanguage;
     public string EntityTypesGuidance { get; init; } = PromptTemplates.DefaultEntityTypesGuidance;
     public IReadOnlyList<string> TextExamples { get; init; } = PromptTemplates.EntityExtractionExamples;
-    public IReadOnlyList<string> JsonExamples { get; init; } = [];
+    public IReadOnlyList<string> JsonExamples { get; init; } = PromptTemplates.EntityExtractionJsonExamples;
     public int MaxTotalRecords { get; init; } = Constants.DefaultMaxExtractionRecords;
     public int MaxEntityRecords { get; init; } = Constants.DefaultMaxExtractionEntities;
     public int MaxGleaning { get; init; } = Constants.DefaultMaxGleaning;

@@ -33,9 +33,11 @@ public sealed class LightRag
 
         // Role-bound callers differ only by scheduling priority so interactive queries
         // preempt background ingestion work in the shared priority queue.
-        var extractCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultProcessingPriority, config.Temperature);
-        var summaryCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultSummaryPriority, config.Temperature);
-        var queryCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultQueryPriority, config.Temperature);
+        // The role partitions the LLM cache identity (extraction & summary share the "extract" role,
+        // matching Python's get_llm_cache_identity usage).
+        var extractCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultProcessingPriority, config.Temperature, role: "extract");
+        var summaryCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultSummaryPriority, config.Temperature, role: "extract");
+        var queryCaller = new CachedLlmCaller(llm, scheduler, cache, Constants.DefaultQueryPriority, config.Temperature, role: "query");
 
         var extractor = new EntityExtractor(extractCaller, tokenizer, config.Extraction);
         var builder = new KnowledgeGraphBuilder(

@@ -2,13 +2,17 @@ namespace LightRAG.Core.Abstractions;
 
 /// <summary>
 /// Document processing status, ported from <c>DocStatus</c> in <c>lightrag/base.py</c>.
-/// Pipeline order: Pending -&gt; Processing -&gt; Processed | Failed.
-/// (Parser-stage statuses Parsing/Analyzing are out of scope for this core port.)
+/// Pipeline order: Pending -&gt; Parsing -&gt; Analyzing -&gt; Processing -&gt; Preprocessed -&gt; Processed | Failed.
+/// The core .NET pipeline only emits Pending/Processing/Processed/Failed, but the parser-stage values
+/// are carried so on-disk records written by the Python pipeline round-trip without being collapsed.
 /// </summary>
 public enum DocStatus
 {
     Pending,
+    Parsing,
+    Analyzing,
     Processing,
+    Preprocessed,
     Processed,
     Failed,
 }
@@ -16,10 +20,17 @@ public enum DocStatus
 /// <summary>Serialization helpers keeping the on-disk string values identical to Python.</summary>
 public static class DocStatusExtensions
 {
+    /// <summary>All statuses in declaration order (used to zero-seed status counts like Python).</summary>
+    public static readonly IReadOnlyList<DocStatus> All =
+        (DocStatus[])Enum.GetValues(typeof(DocStatus));
+
     public static string ToWireValue(this DocStatus status) => status switch
     {
         DocStatus.Pending => "pending",
+        DocStatus.Parsing => "parsing",
+        DocStatus.Analyzing => "analyzing",
         DocStatus.Processing => "processing",
+        DocStatus.Preprocessed => "preprocessed",
         DocStatus.Processed => "processed",
         DocStatus.Failed => "failed",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
@@ -28,11 +39,12 @@ public static class DocStatusExtensions
     public static DocStatus FromWireValue(string value) => value switch
     {
         "pending" => DocStatus.Pending,
+        "parsing" => DocStatus.Parsing,
+        "analyzing" => DocStatus.Analyzing,
         "processing" => DocStatus.Processing,
+        "preprocessed" => DocStatus.Preprocessed,
         "processed" => DocStatus.Processed,
         "failed" => DocStatus.Failed,
-        // Treat legacy parser-stage statuses as their nearest core equivalent.
-        "parsing" or "analyzing" or "preprocessed" => DocStatus.Processing,
         _ => throw new ArgumentException($"Unknown doc status: {value}", nameof(value)),
     };
 }

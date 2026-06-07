@@ -1,3 +1,4 @@
+#if CLIP_TOKENIZER_AVAILABLE
 using System.Text.Json;
 using LightRAG.Unity.MobileCLIP;
 
@@ -42,3 +43,4 @@ public class ClipTokenizerParityTests
         Assert.True(failures.Count == 0, "CLIP tokenizer mismatch:\n" + string.Join("\n", failures));
     }
 }
+#endif

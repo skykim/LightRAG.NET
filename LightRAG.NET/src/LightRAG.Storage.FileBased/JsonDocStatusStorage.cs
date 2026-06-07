@@ -70,10 +70,18 @@ public sealed class JsonDocStatusStorage : FileStorageBase, IDocStatusStorage
         }
         foreach (var (id, record) in data)
         {
-            _data[id] = new StorageRecord(record);
+            var stored = new StorageRecord(record);
+            // Default chunks_list (matches Python upsert pre-processing).
+            if (!stored.ContainsKey("chunks_list"))
+            {
+                stored["chunks_list"] = new List<object?>();
+            }
+            _data[id] = stored;
         }
         _dirty = true;
-        return Task.CompletedTask;
+        // doc-status is the ingest pipeline's crash-recovery anchor: Python's upsert calls
+        // index_done_callback() synchronously so the record is on disk before returning.
+        return IndexDoneCallbackAsync(cancellationToken);
     }
 
     public Task DeleteAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken = default)
@@ -92,7 +100,12 @@ public sealed class JsonDocStatusStorage : FileStorageBase, IDocStatusStorage
 
     public Task<IReadOnlyDictionary<string, int>> GetStatusCountsAsync(CancellationToken cancellationToken = default)
     {
+        // Zero-seed every known status so the shape matches Python's get_status_counts.
         var counts = new Dictionary<string, int>();
+        foreach (var status in DocStatusExtensions.All)
+        {
+            counts[status.ToWireValue()] = 0;
+        }
         foreach (var record in _data.Values)
         {
             var status = record.GetString("status") ?? "unknown";

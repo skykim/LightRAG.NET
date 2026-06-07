@@ -1,3 +1,4 @@
+using System.Text;
 using LightRAG.Core.Abstractions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -22,6 +23,29 @@ public static class JsonHelper
     /// <summary>Serialize a value to JSON. <paramref name="indented"/> controls formatting.</summary>
     public static string Serialize(object? value, bool indented = true)
         => JsonConvert.SerializeObject(value, indented ? Formatting.Indented : Formatting.None, Settings);
+
+    /// <summary>
+    /// Serialize ordered key/value pairs as a single-line JSON object matching Python's
+    /// <c>json.dumps(obj, ensure_ascii=False)</c> output (default <c>", "</c> / <c>": "</c> separators,
+    /// non-ASCII left unescaped). Used to build the LLM-facing context exactly as Python does.
+    /// </summary>
+    public static string SerializeLine(params (string Key, object? Value)[] pairs)
+    {
+        var sb = new StringBuilder();
+        sb.Append('{');
+        for (var i = 0; i < pairs.Length; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+            sb.Append(JsonConvert.SerializeObject(pairs[i].Key, Formatting.None, Settings));
+            sb.Append(": ");
+            sb.Append(JsonConvert.SerializeObject(pairs[i].Value, Formatting.None, Settings));
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
 
     /// <summary>Parse JSON text into a <see cref="JToken"/> (no date coercion).</summary>
     public static JToken Parse(string json)

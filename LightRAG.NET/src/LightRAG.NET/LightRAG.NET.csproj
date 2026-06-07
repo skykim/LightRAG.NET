@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Single-assembly build: merges LightRAG.Core + LightRAG.Storage.FileBased source into one managed
+    plugin, LightRAG.NET.dll (netstandard2.1, Unity-ready). Third-party NuGet dependencies
+    (Newtonsoft.Json, Microsoft.ML.Tokenizers) remain external references.
+
+    LightRAG.Providers.Ollama is intentionally NOT merged in: it couples to a specific OllamaSharp
+    version, which conflicts with hosts that ship a different OllamaSharp (e.g. OnDeviceAgent, which
+    talks to Ollama over raw HTTP instead). Keeping it out drops the OllamaSharp dependency entirely.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>LightRAG.NET</AssemblyName>
+    <RootNamespace>LightRAG</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\LightRAG.Core\**\*.cs" Exclude="..\LightRAG.Core\obj\**\*.cs;..\LightRAG.Core\bin\**\*.cs" />
+    <Compile Include="..\LightRAG.Storage.FileBased\**\*.cs" Exclude="..\LightRAG.Storage.FileBased\obj\**\*.cs;..\LightRAG.Storage.FileBased\bin\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>

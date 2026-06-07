@@ -100,4 +100,41 @@ public class LightRagE2ETests
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    // ---- A/B: naive (vector-only) vs mix (KG + vector) retrieval ----
+
+    [Fact]
+    public async Task Naive_vs_mix_modes_ab_compare_retrieval_context()
+    {
+        var dir = JsonKvStorageTests.NewTempDir();
+        try
+        {
+            var rag = FileBasedLightRag.Create(dir, new FakeLlmModel(), FakeEmbedding.Create(), cosineThreshold: 0f);
+            await rag.InitializeAsync();
+            await rag.InsertAsync("Alice is a software engineer at Acme. Acme builds software.", "doc.txt");
+
+            const string question = "Where does Alice work?";
+            var naive = await rag.QueryAsync(question, new QueryParam { Mode = QueryMode.Naive, OnlyNeedContext = true });
+            var mix = await rag.QueryAsync(question, new QueryParam { Mode = QueryMode.Mix, OnlyNeedContext = true });
+
+            // Both surface the source chunk text (vector retrieval is common to both modes).
+            Assert.Contains("Alice", naive.Content);
+            Assert.Contains("Alice", mix.Content);
+
+            // A: naive is vector-only — it carries NO knowledge-graph entity/relation sections.
+            Assert.DoesNotContain("\"entity\":", naive.Content);
+            Assert.DoesNotContain("\"entity1\":", naive.Content);
+
+            // B: mix augments the vector chunks with KG entities AND relations.
+            Assert.Contains("\"entity\":", mix.Content);   // entity objects (KG)
+            Assert.Contains("\"entity1\":", mix.Content);  // relation objects (KG)
+            Assert.Contains("Acme", mix.Content);
+
+            // The mix context is therefore strictly richer than the naive context for the same query.
+            var mixLen = (mix.Content ?? "").Length;
+            var naiveLen = (naive.Content ?? "").Length;
+            Assert.True(mixLen > naiveLen, $"expected mix context (len {mixLen}) to exceed naive (len {naiveLen})");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
 }

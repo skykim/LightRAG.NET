@@ -28,9 +28,13 @@ public static class FileBasedLightRag
             TextChunks = new JsonKvStorage(workingDir, NameSpace.KvStoreTextChunks, workspace),
             LlmResponseCache = new JsonKvStorage(workingDir, NameSpace.KvStoreLlmResponseCache, workspace),
             DocStatus = new JsonDocStatusStorage(workingDir, NameSpace.DocStatus, workspace),
-            EntitiesVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreEntities, embedding, cosineThreshold, workspace),
-            RelationshipsVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreRelationships, embedding, cosineThreshold, workspace),
-            ChunksVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreChunks, embedding, cosineThreshold, workspace),
+            // meta_fields whitelists mirror lightrag.py wiring: only these caller fields are persisted.
+            EntitiesVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreEntities, embedding, cosineThreshold, workspace,
+                metaFields: ["entity_name", "source_id", "content", "file_path"]),
+            RelationshipsVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreRelationships, embedding, cosineThreshold, workspace,
+                metaFields: ["src_id", "tgt_id", "source_id", "content", "file_path"]),
+            ChunksVdb = new NanoVectorDbStorage(workingDir, NameSpace.VectorStoreChunks, embedding, cosineThreshold, workspace,
+                metaFields: ["full_doc_id", "content", "file_path"]),
             Graph = new GraphmlGraphStorage(workingDir, embedding, NameSpace.GraphStoreChunkEntityRelation, workspace),
         };
 

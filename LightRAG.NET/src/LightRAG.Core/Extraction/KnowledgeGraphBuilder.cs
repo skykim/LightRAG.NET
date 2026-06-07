@@ -231,7 +231,8 @@ public sealed class KnowledgeGraphBuilder
         var descriptionList = alreadyDescriptions.Concat(sortedNew).ToList();
         if (descriptionList.Count == 0)
         {
-            descriptionList.Add($"{srcId} is related to {tgtId}");
+            // Matches Python _merge_edges_then_upsert: a relation with no description is an error.
+            throw new InvalidOperationException($"Relation {srcId}~{tgtId} has no description");
         }
 
         var (description, _) = await SummarizeAsync("Relation", $"({srcId}, {tgtId})", descriptionList, cancellationToken).ConfigureAwait(false);
@@ -302,6 +303,12 @@ public sealed class KnowledgeGraphBuilder
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Map-reduce summarization of a description list, ported from <c>_handle_entity_relation_summary</c>.
+    /// When the combined descriptions exceed <c>SummaryContextSize</c> and there are more than two
+    /// fragments, the list is recursively split into context-sized chunks and each chunk summarized,
+    /// so no description is silently dropped (unlike a single truncating LLM call).
+    /// </summary>
     private async Task<(string Description, bool LlmUsed)> SummarizeAsync(
         string type, string name, List<string> descriptions, CancellationToken cancellationToken)
     {
@@ -314,14 +321,84 @@ public sealed class KnowledgeGraphBuilder
             return (descriptions[0], false);
         }
 
-        var totalTokens = descriptions.Sum(d => _tokenizer.CountTokens(d));
-        if (descriptions.Count < _options.ForceLlmSummaryOnMerge && totalTokens < _options.SummaryMaxTokens)
-        {
-            return (string.Join(Sep, descriptions), false);
-        }
+        var summaryContextSize = _options.SummaryContextSize;
+        var summaryMaxTokens = _options.SummaryMaxTokens;
+        var forceLlm = _options.ForceLlmSummaryOnMerge;
 
-        var summary = await SummarizeWithLlmAsync(type, name, descriptions, cancellationToken).ConfigureAwait(false);
-        return (string.IsNullOrWhiteSpace(summary) ? string.Join(Sep, descriptions) : summary, true);
+        var currentList = new List<string>(descriptions);
+        var llmWasUsed = false;
+
+        while (true)
+        {
+            var totalTokens = currentList.Sum(d => _tokenizer.CountTokens(d));
+
+            // Final phase: within the context budget, or down to the irreducible <= 2 fragments.
+            if (totalTokens <= summaryContextSize || currentList.Count <= 2)
+            {
+                if (currentList.Count < forceLlm && totalTokens < summaryMaxTokens)
+                {
+                    // Small enough to keep verbatim — join, no LLM call.
+                    return (string.Join(Sep, currentList), llmWasUsed);
+                }
+
+                // Single summarizing call over the remaining descriptions (Python returns this as-is).
+                var finalSummary = await SummarizeWithLlmAsync(type, name, currentList, cancellationToken).ConfigureAwait(false);
+                return (finalSummary, true);
+            }
+
+            // Map phase: pack into <= summaryContextSize chunks, with >= 2 descriptions each when possible.
+            var chunks = new List<List<string>>();
+            var currentChunk = new List<string>();
+            var currentTokens = 0;
+            foreach (var desc in currentList)
+            {
+                var descTokens = _tokenizer.CountTokens(desc);
+                if (currentTokens + descTokens > summaryContextSize && currentChunk.Count > 0)
+                {
+                    if (currentChunk.Count == 1)
+                    {
+                        // Force a second description so every chunk reduces the count (guarantees progress).
+                        currentChunk.Add(desc);
+                        chunks.Add(currentChunk);
+                        currentChunk = [];
+                        currentTokens = 0;
+                    }
+                    else
+                    {
+                        chunks.Add(currentChunk);
+                        currentChunk = [desc];
+                        currentTokens = descTokens;
+                    }
+                }
+                else
+                {
+                    currentChunk.Add(desc);
+                    currentTokens += descTokens;
+                }
+            }
+            if (currentChunk.Count > 0)
+            {
+                chunks.Add(currentChunk);
+            }
+
+            // Reduce phase: summarize multi-description chunks; pass singletons through unchanged.
+            var newSummaries = new List<string>(chunks.Count);
+            foreach (var chunk in chunks)
+            {
+                if (chunk.Count == 1)
+                {
+                    newSummaries.Add(chunk[0]);
+                }
+                else
+                {
+                    var summary = await SummarizeWithLlmAsync(type, name, chunk, cancellationToken).ConfigureAwait(false);
+                    newSummaries.Add(summary);
+                    llmWasUsed = true;
+                }
+            }
+
+            currentList = newSummaries;
+        }
     }
 
     private async Task<string> SummarizeWithLlmAsync(string type, string name, List<string> descriptions, CancellationToken cancellationToken)

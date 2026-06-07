@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 using LightRAG.Core.Abstractions;
@@ -50,6 +51,52 @@ public static class TextUtils
 
     /// <summary>Whether the value matches a simple signed decimal number.</summary>
     public static bool IsFloatRegex(string value) => FloatRegex.IsMatch(value);
+
+    private static readonly ConcurrentDictionary<string, Regex[]> TupleFixRegexCache = new();
+
+    /// <summary>
+    /// Repair common forms of tuple-delimiter corruption emitted by LLMs
+    /// (e.g. <c>&lt;|##|&gt;</c>, <c>&lt;|&gt;</c>, <c>&lt;#&gt;</c>, missing pipes/brackets), normalizing
+    /// them back to <paramref name="tupleDelimiter"/>. Ported from <c>fix_tuple_delimiter_corruption</c>
+    /// (lightrag/utils.py); substitutions are applied in the same order.
+    /// </summary>
+    public static string FixTupleDelimiterCorruption(string record, string delimiterCore, string tupleDelimiter)
+    {
+        if (string.IsNullOrEmpty(record) || string.IsNullOrEmpty(delimiterCore) || string.IsNullOrEmpty(tupleDelimiter))
+        {
+            return record;
+        }
+
+        var regexes = TupleFixRegexCache.GetOrAdd(delimiterCore, BuildTupleFixRegexes);
+        // $ in the replacement would be treated as a group reference; escape it (default delimiter has none).
+        var replacement = tupleDelimiter.Replace("$", "$$");
+        foreach (var rx in regexes)
+        {
+            record = rx.Replace(record, replacement);
+        }
+        return record;
+    }
+
+    private static Regex[] BuildTupleFixRegexes(string delimiterCore)
+    {
+        var c = Regex.Escape(delimiterCore);
+        return
+        [
+            new Regex($@"<\|{c}\|*?{c}\|>", RegexOptions.Compiled),       // <|##|>, <|#||#|> -> <|#|>
+            new Regex($@"<\|\\{c}\|>", RegexOptions.Compiled),            // <|\#|> -> <|#|>
+            new Regex(@"<\|+>", RegexOptions.Compiled),                    // <|>, <||> -> <|#|>
+            new Regex($@"<.?\|{c}\|.?>", RegexOptions.Compiled),          // <X|#|>, <|#|Y>, <X|#|Y> -> <|#|>
+            new Regex($@"<\|?{c}\|?>", RegexOptions.Compiled),            // <#>, <#|>, <|#> -> <|#|>
+            new Regex($@"<[^|]{c}\|>|<\|{c}[^|]>", RegexOptions.Compiled),// <X#|>, <|#X> -> <|#|>
+            new Regex($@"<\|{c}\|+(?!>)", RegexOptions.Compiled),         // <|#|, <|#|| -> <|#|>
+            new Regex($@"<\|{c}:(?!>)", RegexOptions.Compiled),           // <|#: -> <|#|>
+            new Regex($@"<\|+{c}>", RegexOptions.Compiled),               // <||#> -> <|#|>
+            new Regex(@"<\|\|(?!>)", RegexOptions.Compiled),              // <|| -> <|#|>
+            new Regex($@"(?<!<)\|{c}\|>", RegexOptions.Compiled),         // |#|> -> <|#|>
+            new Regex($@"<\|{c}\|>\|", RegexOptions.Compiled),            // <|#|>| -> <|#|>
+            new Regex($@"\|\|{c}\|\|", RegexOptions.Compiled),            // ||#|| -> <|#|>
+        ];
+    }
 
     /// <summary>
     /// Truncate a list so the cumulative token count of <paramref name="keySelector"/> stays
